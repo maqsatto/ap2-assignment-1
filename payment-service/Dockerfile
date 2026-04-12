@@ -9,5 +9,5 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/payment-service ./cmd
 
 FROM gcr.io/distroless/static-debian11
 COPY --from=builder /out/payment-service /usr/local/bin/payment-service
-EXPOSE 8081
+EXPOSE 8081 50051
 ENTRYPOINT ["/usr/local/bin/payment-service"]

@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package payment.v1;
+
+option go_package = "github.com/youruser/ap2-payment-proto/gen/go/payment/v1;paymentv1";
+
+import "google/protobuf/timestamp.proto";
+
+// PaymentService handles payment processing for orders
+service PaymentService {
+  // ProcessPayment processes a payment for a given order
+  rpc ProcessPayment(PaymentRequest) returns (PaymentResponse) {}
+}
+
+// PaymentRequest represents a payment processing request
+message PaymentRequest {
+  string order_id = 1;
+  int64 amount = 2; // Amount in cents/smallest currency unit
+}
+
+// PaymentResponse represents the response from payment processing
+message PaymentResponse {
+  string payment_id = 1;
+  string order_id = 2;
+  string status = 3; // "Authorized" or "Declined"
+  int64 amount = 4;
+  google.protobuf.Timestamp processed_at = 5;
+}

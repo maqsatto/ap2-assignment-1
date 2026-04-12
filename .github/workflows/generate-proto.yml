@@ -1,0 +1,72 @@
+name: Generate Proto Code
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'proto/**/*.proto'
+  workflow_dispatch:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout proto repository
+        uses: actions/checkout@v4
+        with:
+          path: proto-repo
+
+      - name: Checkout generated code repository
+        uses: actions/checkout@v4
+        with:
+          repository: youruser/ap2-generated-proto
+          token: ${{ secrets.GH_TOKEN }}
+          path: generated-repo
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Install protoc and plugins
+        run: |
+          # Install protoc compiler
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+          # Install Go protoc plugins
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+      - name: Generate code from proto files
+        run: |
+          cd proto-repo
+          
+          # Create output directory
+          mkdir -p ../generated-repo/gen/go/payment/v1
+          mkdir -p ../generated-repo/gen/go/order/v1
+          
+          # Generate payment proto
+          protoc \
+            --go_out=../generated-repo/gen/go/payment/v1 \
+            --go_opt=paths=source_relative \
+            --go-grpc_out=../generated-repo/gen/go/payment/v1 \
+            --go-grpc_opt=paths=source_relative \
+            proto/payment.proto
+          
+          # Generate order proto
+          protoc \
+            --go_out=../generated-repo/gen/go/order/v1 \
+            --go_opt=paths=source_relative \
+            --go-grpc_out=../generated-repo/gen/go/order/v1 \
+            --go-grpc_opt=paths=source_relative \
+            proto/order.proto
+
+      - name: Commit and push generated code
+        run: |
+          cd generated-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git diff --staged --quiet || git commit -m "chore: auto-generate proto code from ${{ github.sha }}"
+          git push

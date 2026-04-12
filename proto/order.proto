@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package order.v1;
+
+option go_package = "github.com/youruser/ap2-order-proto/gen/go/order/v1;orderv1";
+
+import "google/protobuf/timestamp.proto";
+
+// OrderService provides order management and streaming capabilities
+service OrderService {
+  // SubscribeToOrderUpdates streams real-time status updates for a specific order
+  rpc SubscribeToOrderUpdates(OrderRequest) returns (stream OrderStatusUpdate) {}
+}
+
+// OrderRequest represents a request for order information
+message OrderRequest {
+  string order_id = 1;
+}
+
+// OrderStatusUpdate represents a status update for an order
+message OrderStatusUpdate {
+  string order_id = 1;
+  string status = 2; // "Pending", "Paid", "Failed", "Cancelled"
+  google.protobuf.Timestamp updated_at = 3;
+}
+
+// Order represents a complete order entity
+message Order {
+  string id = 1;
+  string customer_id = 2;
+  string item_name = 3;
+  int64 amount = 4;
+  string status = 5;
+  google.protobuf.Timestamp created_at = 6;
+}

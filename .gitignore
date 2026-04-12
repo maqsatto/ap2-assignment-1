@@ -1,0 +1,87 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# Environment variables files
+.env
+.env.local
+.env.*.local
+*.env
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+.classpath
+
+# AI assistant files (exclude from git)
+.cursor/
+.cursorignore
+.cursorrules
+.claude/
+.claude.json
+.claude.json.backup
+.cursorignore
+.cursorrules
+.windsurfer/
+.windsurfrules
+.codeium/
+.tabnine/
+.kilocode/
+.roo/
+.augment/
+.github/copilot-instructions.md
+
+# Docker compose override files (local dev)
+docker-compose.override.yml
+docker-compose.*.override.yml
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Debug files
+debug
+debug.test
+__debug_bin
+
+# Generated proto files (if using local generation)
+*.pb.go
+*.pb.gw.go
+
+# Temp files
+tmp/
+temp/
+
+# Logs
+*.log
+logs/
+
+# Database files (local dev)
+*.db
+*.sqlite
+*.sqlite3

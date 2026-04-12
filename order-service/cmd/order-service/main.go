@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"order-service/internal/repository"
 	ordhttp "order-service/internal/transport/http"
@@ -15,7 +17,7 @@ import (
 
 func main() {
 	dbURL := getEnv("ORDER_DB_URL", "postgres://postgres:postgres@localhost:5432/order_db?sslmode=disable")
-	paymentBaseURL := getEnv("PAYMENT_BASE_URL", "http://localhost:8081")
+	paymentGRPCAddr := getEnv("PAYMENT_GRPC_ADDR", "localhost:50051")
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -28,7 +30,14 @@ func main() {
 	}
 
 	repo := repository.NewOrderRepo(db)
-	paymentClient := usecase.NewPaymentHTTPClient(paymentBaseURL)
+	
+	// Create gRPC payment client
+	paymentClient, err := usecase.NewPaymentGRPCClient(paymentGRPCAddr)
+	if err != nil {
+		log.Fatalf("failed to create payment gRPC client: %v", err)
+	}
+	defer paymentClient.Close()
+	
 	uc := usecase.NewOrderUseCase(repo, paymentClient)
 	handler := ordhttp.NewHandler(uc)
 
@@ -39,10 +48,18 @@ func main() {
 	r.GET("/orders/:id", handler.GetOrder)
 	r.PATCH("/orders/:id/cancel", handler.CancelOrder)
 
-	log.Printf("Order Service running on :8080 (db=%s, payment=%s)", dbURL, paymentBaseURL)
-	if err := r.Run(":8080"); err != nil {
-		log.Fatalf("failed to start server: %v", err)
-	}
+	// Graceful shutdown
+	go func() {
+		log.Printf("Order Service running on :8080 (db=%s, payment_grpc=%s)", dbURL, paymentGRPCAddr)
+		if err := r.Run(":8080"); err != nil {
+			log.Fatalf("failed to start server: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("Shutting down Order Service...")
 }
 
 func getEnv(key, fallback string) string {

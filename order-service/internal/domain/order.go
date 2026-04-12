@@ -16,4 +16,5 @@ type OrderRepository interface {
 	GetByID(id string) (*Order, error)
 	List() ([]Order, error)
 	UpdateStatus(id string, status string) error
+	SubscribeToOrderUpdates(orderID string) <-chan *Order
 }

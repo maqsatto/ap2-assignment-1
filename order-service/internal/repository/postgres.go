@@ -3,6 +3,7 @@ package repository
 import (
 	"database/sql"
 	"order-service/internal/domain"
+	"time"
 )
 
 type OrderRepo struct {
@@ -61,4 +62,36 @@ func (r *OrderRepo) List() ([]domain.Order, error) {
 func (r *OrderRepo) UpdateStatus(id string, status string) error {
 	_, err := r.db.Exec("UPDATE orders SET status = $1 WHERE id = $2", status, id)
 	return err
+}
+
+// SubscribeToOrderUpdates returns a channel that emits order updates when the order status changes in the DB
+func (r *OrderRepo) SubscribeToOrderUpdates(orderID string) <-chan *domain.Order {
+	ch := make(chan *domain.Order, 10)
+
+	go func() {
+		defer close(ch)
+
+		var lastStatus string
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				order, err := r.GetByID(orderID)
+				if err != nil {
+					// Order doesn't exist, stop streaming
+					return
+				}
+
+				// Only send update if status has changed
+				if order.Status != lastStatus {
+					lastStatus = order.Status
+					ch <- order
+				}
+			}
+		}
+	}()
+
+	return ch
 }

@@ -1,9 +1,9 @@
 package grpc
 
 import (
+	orderv1 "github.com/maqsatto/ap2-generated-proto/gen/go/order/v1"
 	"log"
 	"order-service/internal/domain"
-	orderv1 "order-service/proto/gen/go/order/v1"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -41,10 +41,15 @@ func (s *OrderServer) SubscribeToOrderUpdates(req *orderv1.OrderRequest, stream 
 
 	// Stream updates to the client
 	for order := range updates {
+		updatedAt := order.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = order.CreatedAt
+		}
+
 		update := &orderv1.OrderStatusUpdate{
 			OrderId:   order.ID,
 			Status:    order.Status,
-			UpdatedAt: timestamppb.New(order.CreatedAt),
+			UpdatedAt: timestamppb.New(updatedAt),
 		}
 
 		if err := stream.Send(update); err != nil {

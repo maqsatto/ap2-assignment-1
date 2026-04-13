@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/gin-gonic/gin v1.9.1
 	github.com/lib/pq v1.10.9
+	github.com/maqsatto/ap2-generated-proto v1.0.1
 	google.golang.org/grpc v1.71.0
 	google.golang.org/protobuf v1.36.10
 )

@@ -3,8 +3,9 @@ package usecase
 import (
 	"context"
 	"fmt"
-	paymentv1 "order-service/proto/gen/go/payment/v1"
 	"time"
+
+	paymentv1 "github.com/maqsatto/ap2-generated-proto/gen/go/payment/v1"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

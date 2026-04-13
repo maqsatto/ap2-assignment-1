@@ -2,9 +2,9 @@ package grpc
 
 import (
 	"context"
+	paymentv1 "github.com/maqsatto/ap2-generated-proto/gen/go/payment/v1"
 	"payment-service/internal/domain"
 	"payment-service/internal/usecase"
-	paymentv1 "payment-service/proto/gen/go/payment/v1"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

@@ -9,6 +9,7 @@ type Order struct {
 	Amount     int64
 	Status     string
 	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 type OrderRepository interface {

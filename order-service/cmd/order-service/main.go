@@ -34,7 +34,10 @@ func main() {
 		log.Fatalf("failed to ping database: %v", err)
 	}
 
-	repo := repository.NewOrderRepo(db)
+	repo, err := repository.NewOrderRepo(db)
+	if err != nil {
+		log.Fatalf("failed to initialize order repository: %v", err)
+	}
 	
 	// Create gRPC payment client
 	paymentClient, err := usecase.NewPaymentGRPCClient(paymentGRPCAddr)

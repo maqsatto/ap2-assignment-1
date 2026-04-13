@@ -51,11 +51,12 @@ flowchart LR
 This project uses **Remote Generation** for proto files:
 
 - **Proto Repository**: Contains `.proto` definitions
-  - Location: `/proto` directory in this repository
+  - Location: [https://github.com/maqsatto/ap2-proto](https://github.com/maqsatto/ap2-proto)
   - Payment Service: `proto/payment.proto`
   - Order Service: `proto/order.proto`
 
 - **Generated Code Repository**: Automated via GitHub Actions
+  - Location: [https://github.com/maqsatto/ap2-generated-proto](https://github.com/maqsatto/ap2-generated-proto)
   - Workflow: `.github/workflows/generate-proto.yml`
   - Automatically generates `.pb.go` files on proto changes
   - Services import generated code via `go get`
@@ -147,9 +148,9 @@ docker compose up --build
 | Service         | Type | URL                      | Purpose                |
 | --------------- | ---- | ------------------------ | ---------------------- |
 | Order Service   | REST | `http://localhost:18080` | Order CRUD operations  |
-| Order Service   | gRPC | `localhost:150052`       | Order status streaming |
+| Order Service   | gRPC | `localhost:50052`        | Order status streaming |
 | Payment Service | REST | `http://localhost:18081` | Payment queries        |
-| Payment Service | gRPC | `localhost:150051`       | Payment processing     |
+| Payment Service | gRPC | `localhost:50051`        | Payment processing     |
 
 ### Testing gRPC Calls
 
@@ -161,7 +162,7 @@ Use [grpcurl](https://github.com/fullstorydev/grpcurl) or [BloomRPC](https://git
 # Test payment via gRPC
 grpcurl -plaintext \
   -d '{"order_id":"ORD-TEST-001","amount":5000}' \
-  localhost:150051 \
+  localhost:50051 \
   payment.v1.PaymentService/ProcessPayment
 ```
 
@@ -171,7 +172,7 @@ grpcurl -plaintext \
 # Subscribe to order updates (will stream updates as status changes)
 grpcurl -plaintext \
   -d '{"order_id":"ORD-SEED-PENDING-001"}' \
-  localhost:150052 \
+  localhost:50052 \
   order.v1.OrderService/SubscribeToOrderUpdates
 ```
 
@@ -253,7 +254,7 @@ After starting services, use grpcurl to test payment processing:
 ```bash
 $ grpcurl -plaintext \
   -d '{"order_id":"ORD-GRPC-001","amount":5000}' \
-  localhost:150051 \
+  localhost:50051 \
   payment.v1.PaymentService/ProcessPayment
 
 {
@@ -272,7 +273,7 @@ Terminal 1 - Subscribe to order updates:
 ```bash
 $ grpcurl -plaintext \
   -d '{"order_id":"ORD-SEED-PENDING-001"}' \
-  localhost:150052 \
+  localhost:50052 \
   order.v1.OrderService/SubscribeToOrderUpdates
 
 # Output (appears when order status changes):
@@ -334,7 +335,7 @@ gRPC Response: method=/payment.v1.PaymentService/ProcessPayment status=OK durati
 │   │   └── transport/
 │   │       ├── http/                # Unchanged REST handlers
 │   │       └── grpc/                # NEW: gRPC streaming server
-│   └── proto/gen/go/                # Generated proto code
+│   └── (imports from ap2-generated-proto)
 └── payment-service/
     ├── cmd/payment-service/
     │   └── main.go                  # REST + gRPC servers
@@ -345,7 +346,7 @@ gRPC Response: method=/payment.v1.PaymentService/ProcessPayment status=OK durati
     │   └── transport/
     │       ├── http/                # Unchanged
     │       └── grpc/                # NEW: gRPC server + interceptor
-    └── proto/gen/go/                # Generated proto code
+    └── (imports from ap2-generated-proto)
 ```
 
 ## Grading Rubric Alignment
@@ -370,7 +371,7 @@ If Order Service cannot connect to Payment Service:
 docker compose logs payment-service | grep "gRPC Server"
 
 # Test gRPC connectivity
-grpcurl -plaintext localhost:150051 list
+grpcurl -plaintext localhost:50051 list
 ```
 
 ### Streaming Not Working

@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'proto/**/*.proto'
+      - "proto/**/*.proto"
   workflow_dispatch:
 
 jobs:
@@ -19,14 +19,14 @@ jobs:
       - name: Checkout generated code repository
         uses: actions/checkout@v4
         with:
-          repository: youruser/ap2-generated-proto
+          repository: maqsatto/ap2-generated-proto
           token: ${{ secrets.GH_TOKEN }}
           path: generated-repo
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version: "1.26"
 
       - name: Install protoc and plugins
         run: |
@@ -41,26 +41,16 @@ jobs:
       - name: Generate code from proto files
         run: |
           cd proto-repo
-          
-          # Create output directory
-          mkdir -p ../generated-repo/gen/go/payment/v1
-          mkdir -p ../generated-repo/gen/go/order/v1
-          
-          # Generate payment proto
+
+          export PATH="$(go env GOPATH)/bin:$PATH"
+
           protoc \
-            --go_out=../generated-repo/gen/go/payment/v1 \
-            --go_opt=paths=source_relative \
-            --go-grpc_out=../generated-repo/gen/go/payment/v1 \
-            --go-grpc_opt=paths=source_relative \
-            proto/payment.proto
-          
-          # Generate order proto
-          protoc \
-            --go_out=../generated-repo/gen/go/order/v1 \
-            --go_opt=paths=source_relative \
-            --go-grpc_out=../generated-repo/gen/go/order/v1 \
-            --go-grpc_opt=paths=source_relative \
-            proto/order.proto
+            --proto_path=. \
+            --go_out=../generated-repo \
+            --go_opt=module=github.com/maqsatto/ap2-generated-proto \
+            --go-grpc_out=../generated-repo \
+            --go-grpc_opt=module=github.com/maqsatto/ap2-generated-proto \
+            proto/payment.proto proto/order.proto
 
       - name: Commit and push generated code
         run: |

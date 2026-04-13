@@ -98,25 +98,37 @@ func (uc *OrderUseCase) CreateOrder(customerID, itemName string, amount int64) (
 		Amount:     amount,
 		Status:     "Pending",
 		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
 	}
 
 	if err := uc.repo.Create(order); err != nil {
 		return nil, fmt.Errorf("failed to create order: %w", err)
 	}
 
+	order.UpdatedAt = order.CreatedAt
+
 	paymentStatus, err := uc.paymentClient.ProcessPayment(order.ID, order.Amount)
 	if err != nil {
-		uc.repo.UpdateStatus(order.ID, "Failed")
+		if updateErr := uc.repo.UpdateStatus(order.ID, "Failed"); updateErr != nil {
+			return nil, fmt.Errorf("failed to mark order as failed: %w", updateErr)
+		}
 		order.Status = "Failed"
+		order.UpdatedAt = time.Now()
 		return nil, fmt.Errorf("%w: %v", ErrPaymentServiceUnavailable, err)
 	}
 
 	if paymentStatus == "Authorized" {
-		uc.repo.UpdateStatus(order.ID, "Paid")
+		if err := uc.repo.UpdateStatus(order.ID, "Paid"); err != nil {
+			return nil, fmt.Errorf("failed to mark order as paid: %w", err)
+		}
 		order.Status = "Paid"
+		order.UpdatedAt = time.Now()
 	} else {
-		uc.repo.UpdateStatus(order.ID, "Failed")
+		if err := uc.repo.UpdateStatus(order.ID, "Failed"); err != nil {
+			return nil, fmt.Errorf("failed to mark order as failed: %w", err)
+		}
 		order.Status = "Failed"
+		order.UpdatedAt = time.Now()
 	}
 
 	return order, nil

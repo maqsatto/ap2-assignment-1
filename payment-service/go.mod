@@ -6,6 +6,7 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/lib/pq v1.12.1
 	github.com/maqsatto/ap2-generated-proto v1.0.1
+	github.com/rabbitmq/amqp091-go v1.10.0
 	google.golang.org/grpc v1.71.0
 	google.golang.org/protobuf v1.36.10
 )

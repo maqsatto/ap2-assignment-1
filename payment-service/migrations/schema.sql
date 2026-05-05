@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS payments (
     order_id VARCHAR(255) NOT NULL UNIQUE,
     transaction_id VARCHAR(255),
     amount BIGINT NOT NULL,
+    customer_email VARCHAR(255) NOT NULL DEFAULT 'unknown@example.com',
     status VARCHAR(50) NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );

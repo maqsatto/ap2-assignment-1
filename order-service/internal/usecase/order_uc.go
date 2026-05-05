@@ -12,7 +12,7 @@ import (
 )
 
 type PaymentClient interface {
-	ProcessPayment(orderID string, amount int64) (status string, err error)
+	ProcessPayment(orderID string, amount int64, customerEmail string) (status string, err error)
 }
 
 type PaymentHTTPClient struct {
@@ -30,18 +30,20 @@ func NewPaymentHTTPClient(baseURL string) *PaymentHTTPClient {
 }
 
 type paymentRequest struct {
-	OrderID string `json:"order_id"`
-	Amount  int64  `json:"amount"`
+	OrderID       string `json:"order_id"`
+	Amount        int64  `json:"amount"`
+	CustomerEmail string `json:"customer_email"`
 }
 
 type paymentResponse struct {
 	Status string `json:"status"`
 }
 
-func (c *PaymentHTTPClient) ProcessPayment(orderID string, amount int64) (string, error) {
+func (c *PaymentHTTPClient) ProcessPayment(orderID string, amount int64, customerEmail string) (string, error) {
 	body := paymentRequest{
-		OrderID: orderID,
-		Amount:  amount,
+		OrderID:       orderID,
+		Amount:        amount,
+		CustomerEmail: customerEmail,
 	}
 
 	data, err := json.Marshal(body)
@@ -86,19 +88,23 @@ func NewOrderUseCase(repo domain.OrderRepository, paymentClient PaymentClient) *
 	}
 }
 
-func (uc *OrderUseCase) CreateOrder(customerID, itemName string, amount int64) (*domain.Order, error) {
+func (uc *OrderUseCase) CreateOrder(customerID, customerEmail, itemName string, amount int64) (*domain.Order, error) {
 	if amount <= 0 {
 		return nil, fmt.Errorf("amount must be greater than 0")
 	}
+	if customerEmail == "" {
+		customerEmail = fmt.Sprintf("%s@example.com", customerID)
+	}
 
 	order := &domain.Order{
-		ID:         fmt.Sprintf("ORD-%d", time.Now().UnixNano()),
-		CustomerID: customerID,
-		ItemName:   itemName,
-		Amount:     amount,
-		Status:     "Pending",
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
+		ID:            fmt.Sprintf("ORD-%d", time.Now().UnixNano()),
+		CustomerID:    customerID,
+		CustomerEmail: customerEmail,
+		ItemName:      itemName,
+		Amount:        amount,
+		Status:        "Pending",
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	}
 
 	if err := uc.repo.Create(order); err != nil {
@@ -107,7 +113,7 @@ func (uc *OrderUseCase) CreateOrder(customerID, itemName string, amount int64) (
 
 	order.UpdatedAt = order.CreatedAt
 
-	paymentStatus, err := uc.paymentClient.ProcessPayment(order.ID, order.Amount)
+	paymentStatus, err := uc.paymentClient.ProcessPayment(order.ID, order.Amount, order.CustomerEmail)
 	if err != nil {
 		if updateErr := uc.repo.UpdateStatus(order.ID, "Failed"); updateErr != nil {
 			return nil, fmt.Errorf("failed to mark order as failed: %w", updateErr)

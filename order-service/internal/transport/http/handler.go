@@ -23,9 +23,10 @@ func NewHandler(uc *usecase.OrderUseCase) *Handler {
 }
 
 type CreateOrderRequest struct {
-	CustomerID string `json:"customer_id" binding:"required"`
-	ItemName   string `json:"item_name" binding:"required"`
-	Amount     int64  `json:"amount" binding:"required"`
+	CustomerID    string `json:"customer_id" binding:"required"`
+	CustomerEmail string `json:"customer_email"`
+	ItemName      string `json:"item_name" binding:"required"`
+	Amount        int64  `json:"amount" binding:"required"`
 }
 
 func (h *Handler) CreateOrder(c *gin.Context) {
@@ -48,7 +49,7 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	order, err := h.uc.CreateOrder(req.CustomerID, req.ItemName, req.Amount)
+	order, err := h.uc.CreateOrder(req.CustomerID, req.CustomerEmail, req.ItemName, req.Amount)
 	if err != nil {
 		if errors.Is(err, usecase.ErrPaymentServiceUnavailable) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})

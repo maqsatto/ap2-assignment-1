@@ -21,15 +21,17 @@ func NewOrderRepo(db *sql.DB) (*OrderRepo, error) {
 func (r *OrderRepo) ensureSchema() error {
 	_, err := r.db.Exec(`
 		ALTER TABLE orders
-		ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW();
+		ALTER TABLE orders
+		ADD COLUMN IF NOT EXISTS customer_email VARCHAR(255) NOT NULL DEFAULT 'unknown@example.com'
 	`)
 	return err
 }
 
 func (r *OrderRepo) Create(order *domain.Order) error {
 	_, err := r.db.Exec(
-		"INSERT INTO orders (id, customer_id, item_name, amount, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-		order.ID, order.CustomerID, order.ItemName, order.Amount, order.Status, order.CreatedAt, order.UpdatedAt,
+		"INSERT INTO orders (id, customer_id, customer_email, item_name, amount, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+		order.ID, order.CustomerID, order.CustomerEmail, order.ItemName, order.Amount, order.Status, order.CreatedAt, order.UpdatedAt,
 	)
 	return err
 }
@@ -37,9 +39,9 @@ func (r *OrderRepo) Create(order *domain.Order) error {
 func (r *OrderRepo) GetByID(id string) (*domain.Order, error) {
 	o := &domain.Order{}
 	err := r.db.QueryRow(
-		"SELECT id, customer_id, item_name, amount, status, created_at, updated_at FROM orders WHERE id = $1",
+		"SELECT id, customer_id, customer_email, item_name, amount, status, created_at, updated_at FROM orders WHERE id = $1",
 		id,
-	).Scan(&o.ID, &o.CustomerID, &o.ItemName, &o.Amount, &o.Status, &o.CreatedAt, &o.UpdatedAt)
+	).Scan(&o.ID, &o.CustomerID, &o.CustomerEmail, &o.ItemName, &o.Amount, &o.Status, &o.CreatedAt, &o.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +50,7 @@ func (r *OrderRepo) GetByID(id string) (*domain.Order, error) {
 
 func (r *OrderRepo) List() ([]domain.Order, error) {
 	rows, err := r.db.Query(
-		"SELECT id, customer_id, item_name, amount, status, created_at, updated_at FROM orders ORDER BY created_at DESC",
+		"SELECT id, customer_id, customer_email, item_name, amount, status, created_at, updated_at FROM orders ORDER BY created_at DESC",
 	)
 	if err != nil {
 		return nil, err
@@ -58,7 +60,7 @@ func (r *OrderRepo) List() ([]domain.Order, error) {
 	orders := make([]domain.Order, 0)
 	for rows.Next() {
 		var o domain.Order
-		if err := rows.Scan(&o.ID, &o.CustomerID, &o.ItemName, &o.Amount, &o.Status, &o.CreatedAt, &o.UpdatedAt); err != nil {
+		if err := rows.Scan(&o.ID, &o.CustomerID, &o.CustomerEmail, &o.ItemName, &o.Amount, &o.Status, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, err
 		}
 		orders = append(orders, o)

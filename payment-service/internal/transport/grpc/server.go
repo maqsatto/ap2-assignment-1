@@ -8,6 +8,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -31,7 +32,14 @@ func (s *PaymentServer) ProcessPayment(ctx context.Context, req *paymentv1.Payme
 		return nil, status.Errorf(codes.InvalidArgument, "amount must be greater than 0")
 	}
 
-	payment, err := s.uc.ProcessPayment(req.OrderId, req.Amount)
+	customerEmail := "unknown@example.com"
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if values := md.Get("customer-email"); len(values) > 0 && values[0] != "" {
+			customerEmail = values[0]
+		}
+	}
+
+	payment, err := s.uc.ProcessPayment(ctx, req.OrderId, req.Amount, customerEmail)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to process payment: %v", err)
 	}

@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"order-service/internal/repository"
 	grpc_transport "order-service/internal/transport/grpc"
@@ -38,19 +41,24 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize order repository: %v", err)
 	}
-	
+
 	// Create gRPC payment client
 	paymentClient, err := usecase.NewPaymentGRPCClient(paymentGRPCAddr)
 	if err != nil {
 		log.Fatalf("failed to create payment gRPC client: %v", err)
 	}
 	defer paymentClient.Close()
-	
+
 	uc := usecase.NewOrderUseCase(repo, paymentClient)
 	handler := ordhttp.NewHandler(uc)
 
-	// Start gRPC server for order streaming
-	go startGRPCServer(orderGRPCPort, repo)
+	grpcServer, grpcListener := newGRPCServer(orderGRPCPort, repo)
+	go func() {
+		log.Printf("Order gRPC Server running on :%s", orderGRPCPort)
+		if err := grpcServer.Serve(grpcListener); err != nil {
+			log.Printf("order gRPC server stopped: %v", err)
+		}
+	}()
 
 	// Start HTTP server
 	r := gin.Default()
@@ -60,21 +68,28 @@ func main() {
 	r.GET("/orders/:id", handler.GetOrder)
 	r.PATCH("/orders/:id/cancel", handler.CancelOrder)
 
-	// Graceful shutdown
+	httpServer := &http.Server{Addr: ":8080", Handler: r}
 	go func() {
 		log.Printf("Order Service running on :8080 (db=%s, payment_grpc=%s, order_grpc=%s)", dbURL, paymentGRPCAddr, orderGRPCPort)
-		if err := r.Run(":8080"); err != nil {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("failed to start server: %v", err)
 		}
 	}()
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	<-ctx.Done()
+
 	log.Println("Shutting down Order Service...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("order HTTP shutdown error: %v", err)
+	}
+	grpcServer.GracefulStop()
 }
 
-func startGRPCServer(port string, repo *repository.OrderRepo) {
+func newGRPCServer(port string, repo *repository.OrderRepo) (*grpc.Server, net.Listener) {
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", port))
 	if err != nil {
 		log.Fatalf("failed to listen on port %s: %v", port, err)
@@ -84,10 +99,7 @@ func startGRPCServer(port string, repo *repository.OrderRepo) {
 
 	grpc_transport.RegisterOrderServer(grpcServer, repo)
 
-	log.Printf("Order gRPC Server running on :%s", port)
-	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("failed to serve gRPC: %v", err)
-	}
+	return grpcServer, lis
 }
 
 func getEnv(key, fallback string) string {

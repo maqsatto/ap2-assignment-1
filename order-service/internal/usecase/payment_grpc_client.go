@@ -9,6 +9,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -32,9 +33,10 @@ func NewPaymentGRPCClient(grpcAddr string) (*PaymentGRPCClient, error) {
 }
 
 // ProcessPayment processes a payment via gRPC
-func (c *PaymentGRPCClient) ProcessPayment(orderID string, amount int64) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+func (c *PaymentGRPCClient) ProcessPayment(orderID string, amount int64, customerEmail string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ctx = metadata.AppendToOutgoingContext(ctx, "customer-email", customerEmail)
 
 	req := &paymentv1.PaymentRequest{
 		OrderId: orderID,

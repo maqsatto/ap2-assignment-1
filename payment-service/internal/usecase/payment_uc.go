@@ -1,23 +1,36 @@
 package usecase
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"payment-service/internal/domain"
+	"payment-service/internal/messaging"
 	"time"
 )
 
+type PaymentEventPublisher interface {
+	PublishPaymentCompleted(ctx context.Context, event messaging.PaymentCompletedEvent) error
+}
+
 type PaymentUseCase struct {
-	repo domain.PaymentRepository
+	repo      domain.PaymentRepository
+	publisher PaymentEventPublisher
 }
 
-func NewPaymentUseCase(repo domain.PaymentRepository) *PaymentUseCase {
-	return &PaymentUseCase{repo: repo}
+func NewPaymentUseCase(repo domain.PaymentRepository, publisher PaymentEventPublisher) *PaymentUseCase {
+	if publisher == nil {
+		publisher = messaging.NoopPublisher{}
+	}
+	return &PaymentUseCase{repo: repo, publisher: publisher}
 }
 
-func (uc *PaymentUseCase) ProcessPayment(orderID string, amount int64) (*domain.Payment, error) {
+func (uc *PaymentUseCase) ProcessPayment(ctx context.Context, orderID string, amount int64, customerEmail string) (*domain.Payment, error) {
 	if amount <= 0 {
 		return nil, fmt.Errorf("amount must be greater than 0")
+	}
+	if customerEmail == "" {
+		customerEmail = "unknown@example.com"
 	}
 
 	var status string
@@ -36,12 +49,24 @@ func (uc *PaymentUseCase) ProcessPayment(orderID string, amount int64) (*domain.
 		OrderID:       orderID,
 		TransactionID: transactionID,
 		Amount:        amount,
+		CustomerEmail: customerEmail,
 		Status:        status,
 		CreatedAt:     time.Now(),
 	}
 
 	if err := uc.repo.Create(payment); err != nil {
 		return nil, fmt.Errorf("failed to save payment: %w", err)
+	}
+
+	event := messaging.PaymentCompletedEvent{
+		EventID:       payment.ID,
+		OrderID:       payment.OrderID,
+		Amount:        payment.Amount,
+		CustomerEmail: payment.CustomerEmail,
+		Status:        payment.Status,
+	}
+	if err := uc.publisher.PublishPaymentCompleted(ctx, event); err != nil {
+		return nil, fmt.Errorf("failed to publish payment completed event: %w", err)
 	}
 
 	return payment, nil

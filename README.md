@@ -1,399 +1,213 @@
-# Advanced Programming Assignment 2 - gRPC Migration
+# Advanced Programming 2 - Assignment 3
 
-## Architecture Overview
+Event-Driven Architecture with RabbitMQ. This repository continues the Assignment 2 gRPC solution and adds asynchronous notifications:
 
-This project demonstrates a **Contract-First gRPC migration** from Assignment 1's REST-based microservices. The Order and Payment services now communicate via **gRPC** while maintaining their REST APIs for external clients.
+```text
+Order Service -> gRPC -> Payment Service -> RabbitMQ -> Notification Service
+```
 
-### Key Changes from Assignment 1:
+## What Changed From Assignment 2
 
-- **Contract-First Approach**: Service contracts defined in `.proto` files with automated code generation
-- **gRPC Communication**: Internal service-to-service communication migrated from HTTP to gRPC
-- **Server-Side Streaming**: Real-time order status updates via gRPC streaming tied to database changes
-- **Clean Architecture**: Business logic remains unchanged; only delivery layer updated
-- **gRPC Middleware**: Logging interceptor on Payment Service for request monitoring
+- Order Service still calls Payment Service synchronously through gRPC.
+- Payment Service is now also a RabbitMQ producer.
+- Notification Service is a new independent consumer service.
+- Email sending is simulated by logs, so Payment no longer calls Notification directly.
+- Docker Compose now runs Order, Payment, Notification, PostgreSQL databases, and RabbitMQ.
+
+## Architecture Diagram
 
 ```mermaid
 flowchart LR
-    subgraph Client
-        HTTP[HTTP Client]
-        gRPCStream[gRPC Stream Client]
-    end
+    Client[HTTP Client] -->|POST /orders| Order[Order Service]
+    Order -->|ProcessPayment gRPC| Payment[Payment Service]
+    Order --> OrderDB[(order-db)]
+    Payment --> PaymentDB[(payment-db)]
+    Payment -->|durable JSON payment.completed| Rabbit[(RabbitMQ)]
+    Rabbit -->|manual ACK consumer| Notification[Notification Service]
+    Rabbit --> DLQ[(payment.completed.dlq)]
 
-    subgraph Order Service
-        OH[REST Handler]
-        OU[Order Use Case]
-        OR[Order Repository]
-        OGS[Order gRPC Server - Streaming]
-    end
-
-    subgraph Payment Service
-        PGS[Payment gRPC Server]
-        PU[Payment Use Case]
-        PR[Payment Repository]
-        PH[REST Handler]
-        INT[Logging Interceptor]
-    end
-
-    HTTP -->|REST| OH
-    OH --> OU --> OR
-    OH -->|gRPC Client| INT
-    INT --> PGS --> PU --> PR
-    gRPCStream -->|gRPC Stream| OGS
-    OGS --> OR
-
-    PH --> PU
+    Notification -->|console log| Log[Notification log]
 ```
 
-## Proto Repositories
+## Services
 
-### Contract-First Flow
+### Order Service
 
-This project uses **Remote Generation** for proto files:
+- Exposes REST API on `http://localhost:18080`.
+- Creates orders and calls Payment Service via gRPC.
+- Accepts `customer_email` and forwards it to Payment Service through gRPC metadata.
+- Has graceful shutdown for HTTP and gRPC servers.
 
-- **Proto Repository**: Contains `.proto` definitions
-  - Location: [https://github.com/maqsatto/ap2-proto](https://github.com/maqsatto/ap2-proto)
-  - Payment Service: `proto/payment.proto`
-  - Order Service: `proto/order.proto`
+Example:
 
-- **Generated Code Repository**: Automated via GitHub Actions
-  - Location: [https://github.com/maqsatto/ap2-generated-proto](https://github.com/maqsatto/ap2-generated-proto)
-  - Workflow: `.github/workflows/generate-proto.yml`
-  - Automatically generates `.pb.go` files on proto changes
-  - Services import generated code via `go get`
+```bash
+curl -X POST http://localhost:18080/orders \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: demo-1" \
+  -d '{"customer_id":"cust-123","customer_email":"user@example.com","item_name":"keyboard","amount":9999}'
+```
 
-### Proto Definitions
+### Payment Service
 
-#### Payment Service (`proto/payment.proto`)
+- Exposes REST API on `http://localhost:18081`.
+- Exposes gRPC API on `localhost:50051`.
+- Stores payment records in PostgreSQL.
+- After the payment record is saved, publishes a persistent JSON event to RabbitMQ queue `payment.completed`.
+- Uses RabbitMQ publisher confirms so the service knows the broker accepted the event.
 
-```protobuf
-service PaymentService {
-  rpc ProcessPayment(PaymentRequest) returns (PaymentResponse) {}
+Event payload:
+
+```json
+{
+  "event_id": "PAY-...",
+  "order_id": "ORD-...",
+  "amount": 9999,
+  "customer_email": "user@example.com",
+  "status": "Authorized"
 }
 ```
 
-- Unary RPC for payment processing
-- Proper error handling with gRPC status codes
-- Uses `google.protobuf.Timestamp` for timestamps
+### Notification Service
 
-#### Order Service (`proto/order.proto`)
+- Consumes only RabbitMQ messages.
+- Does not import or call Order Service or Payment Service.
+- Logs the simulated email:
 
-```protobuf
-service OrderService {
-  rpc SubscribeToOrderUpdates(OrderRequest) returns (stream OrderStatusUpdate) {}
-}
+```text
+[Notification] Sent email to user@example.com for Order #ORD-123. Amount: $99.99
 ```
 
-- **Server-side Streaming** RPC for real-time order status updates
-- Tied to actual database changes (polling every 500ms)
-- Streams update whenever order status changes in PostgreSQL
+## Reliability
 
-## Bounded Contexts
+### Durable Queues and Persistent Messages
 
-- **Order Service context**: Manages `Order` lifecycle (`Pending` → `Paid`/`Failed`/`Cancelled`). Calls Payment Service via gRPC client. Exposes streaming updates via gRPC server.
-- **Payment Service context**: Validates amounts (declining anything > 100,000 cents), records the `Payment`, and exposes outcome via both REST and gRPC.
-- **No shared packages**: Each service maintains its own domain models, repositories, and generated proto code.
+RabbitMQ queue `payment.completed` is declared as durable. Payment Service publishes messages with `DeliveryMode: Persistent`, so messages survive broker restarts when RabbitMQ persists them to disk.
 
-## gRPC Implementation Details
+### Manual ACK Logic
 
-### Payment Service (gRPC Server)
+Notification Service consumes with `autoAck=false`.
 
-- **Unary RPC**: `ProcessPayment` for processing payments
-- **Interceptor**: Logging middleware logs every request's method name and duration (+10% bonus)
-- **Error Handling**: Uses `google.golang.org/grpc/status` with proper gRPC codes
-  - `InvalidArgument` for validation errors
-  - `Unavailable` for service unavailability
-  - `Internal` for server errors
+- If the event is processed and the log is printed, the service calls `Ack(false)`.
+- If processing fails before the log is printed, the message is not acknowledged as successful.
+- This gives at-least-once delivery: if the consumer crashes before ACK, RabbitMQ can redeliver the message.
 
-### Order Service (gRPC Client & Server)
+### Idempotency Strategy
 
-- **gRPC Client**: Calls Payment Service's `ProcessPayment` RPC
-  - 2-second timeout on payment calls
-  - Proper error translation to HTTP status codes
-- **gRPC Server**: Streams order status updates via `SubscribeToOrderUpdates`
-  - DB polling mechanism detects status changes every 500ms
-  - Only emits updates when status actually changes
-  - Buffered channel (capacity 10) prevents blocking
+Notification Service keeps an in-memory map of processed `event_id` values.
+
+- First delivery: log is printed, then `event_id` is marked processed, then ACK is sent.
+- Duplicate delivery: `event_id` is already known, so the service skips the log and ACKs the duplicate.
+
+This prevents duplicate notification logs for the same event ID. For a production system, the same strategy would use a database table instead of memory.
+
+### DLQ Bonus
+
+The queue is configured with:
+
+- dead-letter exchange: `payment.dlx`
+- dead-letter queue: `payment.completed.dlq`
+- max processing attempts: `3`
+
+On failure, Notification Service republishes the message with an incremented `x-attempts` header. On the third failed attempt it rejects the message with `requeue=false`, and RabbitMQ moves it to `payment.completed.dlq`.
+
+Permanent failure simulation:
+
+- Create an order with `customer_email` equal to `fail@example.com`.
+- Notification Service treats that address as a permanent notification provider error.
+- After 3 attempts, the message is sent to the DLQ.
+
+```bash
+curl -X POST http://localhost:18080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id":"cust-dlq","customer_email":"fail@example.com","item_name":"dlq-demo","amount":5000}'
+```
+
+Open RabbitMQ UI at `http://localhost:15672` with `guest` / `guest` and check `payment.completed.dlq`.
+
+## Running
+
+```bash
+docker compose up --build
+```
+
+Services and ports:
+
+| Component | URL |
+| --- | --- |
+| Order REST | `http://localhost:18080` |
+| Payment REST | `http://localhost:18081` |
+| Payment gRPC | `localhost:50051` |
+| Order gRPC stream | `localhost:50052` |
+| RabbitMQ AMQP | `localhost:5672` |
+| RabbitMQ UI | `http://localhost:15672` |
+
+If you previously ran Assignment 2 containers, reset volumes once so the updated schemas and RabbitMQ topology are created cleanly:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+## Demo Flow
+
+1. Start everything:
+
+```bash
+docker compose up --build
+```
+
+2. Create a successful order:
+
+```bash
+curl -X POST http://localhost:18080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id":"cust-123","customer_email":"user@example.com","item_name":"mouse","amount":9999}'
+```
+
+3. Check Notification Service logs. You should see:
+
+```text
+[Notification] Sent email to user@example.com for Order #ORD-.... Amount: $99.99
+```
+
+4. Stop only Notification Service:
+
+```bash
+docker compose stop notification-service
+```
+
+5. Create another order. The event remains in RabbitMQ because the queue is durable and the consumer is offline.
+
+6. Start Notification Service again:
+
+```bash
+docker compose start notification-service
+```
+
+7. The pending notification is consumed and ACKed after the log is printed.
+
+8. Demonstrate DLQ with `fail@example.com` and inspect `payment.completed.dlq` in RabbitMQ UI.
 
 ## Configuration
 
-All configuration via **environment variables** (no hardcoding):
-
-| Variable            | Service         | Purpose                  | Default           |
-| ------------------- | --------------- | ------------------------ | ----------------- |
-| `ORDER_DB_URL`      | Order Service   | Database connection      | `postgres://...`  |
-| `PAYMENT_GRPC_ADDR` | Order Service   | Payment gRPC address     | `localhost:50051` |
-| `ORDER_GRPC_PORT`   | Order Service   | Order gRPC server port   | `50052`           |
-| `PAYMENT_DB_URL`    | Payment Service | Database connection      | `postgres://...`  |
-| `PAYMENT_GRPC_PORT` | Payment Service | Payment gRPC server port | `50051`           |
-| `PAYMENT_HTTP_PORT` | Payment Service | Payment REST API port    | `8081`            |
-
-## Running Locally
-
-### With Docker Compose (Recommended)
-
-1. Ensure Docker (Compose v2) is installed.
-2. From the project root run:
-
-```bash
-docker compose up --build
-```
-
-3. Compose spins up:
-   - Two Postgres 17 containers (`order-db`, `payment-db`)
-   - Payment Service with **REST + gRPC** endpoints
-   - Order Service with **REST + gRPC** endpoints
-
-4. Exposed endpoints:
-
-| Service         | Type | URL                      | Purpose                |
-| --------------- | ---- | ------------------------ | ---------------------- |
-| Order Service   | REST | `http://localhost:18080` | Order CRUD operations  |
-| Order Service   | gRPC | `localhost:50052`        | Order status streaming |
-| Payment Service | REST | `http://localhost:18081` | Payment queries        |
-| Payment Service | gRPC | `localhost:50051`        | Payment processing     |
-
-### Testing gRPC Calls
-
-#### Test Payment Processing via gRPC
-
-Use [grpcurl](https://github.com/fullstorydev/grpcurl) or [BloomRPC](https://github.com/uw-labs/bloomrpc):
-
-```bash
-# Test payment via gRPC
-grpcurl -plaintext \
-  -d '{"order_id":"ORD-TEST-001","amount":5000}' \
-  localhost:50051 \
-  payment.v1.PaymentService/ProcessPayment
-```
-
-#### Test Order Status Streaming
-
-```bash
-# Subscribe to order updates (will stream updates as status changes)
-grpcurl -plaintext \
-  -d '{"order_id":"ORD-SEED-PENDING-001"}' \
-  localhost:50052 \
-  order.v1.OrderService/SubscribeToOrderUpdates
-```
-
-In another terminal, update the order status:
-
-```bash
-# Create a new order (triggers payment via gRPC)
-curl -X POST http://localhost:18080/orders \
-  -H "Content-Type: application/json" \
-  -d '{"customer_id":"cust-123","item_name":"widget","amount":1000}'
-
-# Or cancel an order (streams "Cancelled" update)
-curl -X PATCH http://localhost:18080/orders/ORD-SEED-PENDING-001/cancel
-```
-
-### Seed Data For Testing
-
-PostgreSQL automatically runs all SQL files from each service's `migrations` folder on first DB initialization. The project includes:
-
-- `order-service/migrations/seed.sql` with ready-made orders in all lifecycle states (`Pending`, `Paid`, `Failed`, `Cancelled`).
-- `payment-service/migrations/seed.sql` with both `Authorized` and `Declined` payments linked to seeded order IDs.
-
-If containers were started before seed files were added, reset volumes once and recreate:
-
-```bash
-docker compose down -v
-docker compose up --build
-```
-
-Quick checks after startup:
-
-```bash
-curl http://localhost:18080/orders/ORD-SEED-PAID-001
-curl http://localhost:18080/orders/ORD-SEED-PENDING-001
-curl http://localhost:18081/payments/ORD-SEED-PAID-001
-curl http://localhost:18081/payments/ORD-SEED-FAILED-001
-```
-
-## API Surface & Testing
-
-### REST API (External)
-
-The Order Service maintains its REST API for external clients:
-
-- `POST /orders` creates a `Pending` order, calls Payment via **gRPC**, updates status
-- `GET /orders` returns all orders sorted by newest first
-- `GET /orders/{id}` reads the order
-- `PATCH /orders/{id}/cancel` cancels pending orders
-
-### gRPC API (Internal)
-
-- **Payment Service**: `ProcessPayment` (unary)
-- **Order Service**: `SubscribeToOrderUpdates` (server streaming)
-
-### Sample curl flows
-
-```bash
-# Create order (internally uses gRPC for payment)
-curl -X POST http://localhost:18080/orders \
-  -H "Content-Type: application/json" \
-  -d '{"customer_id":"cust-123","item_name":"widget","amount":1000}'
-
-# List orders
-curl http://localhost:18080/orders
-
-# Get specific order
-curl http://localhost:18080/orders/ORD-12345
-
-# Cancel order
-curl -X PATCH http://localhost:18080/orders/ORD-12345/cancel
-```
-
-## Evidence Screenshots
-
-### gRPC Payment Processing
-
-After starting services, use grpcurl to test payment processing:
-
-```bash
-$ grpcurl -plaintext \
-  -d '{"order_id":"ORD-GRPC-001","amount":5000}' \
-  localhost:50051 \
-  payment.v1.PaymentService/ProcessPayment
-
-{
-  "paymentId": "PAY-1234567890",
-  "orderId": "ORD-GRPC-001",
-  "status": "Authorized",
-  "amount": "5000",
-  "processedAt": "2026-04-12T18:00:00Z"
-}
-```
-
-### Real-Time Streaming Updates
-
-Terminal 1 - Subscribe to order updates:
-
-```bash
-$ grpcurl -plaintext \
-  -d '{"order_id":"ORD-SEED-PENDING-001"}' \
-  localhost:50052 \
-  order.v1.OrderService/SubscribeToOrderUpdates
-
-# Output (appears when order status changes):
-{
-  "orderId": "ORD-SEED-PENDING-001",
-  "status": "Pending",
-  "updatedAt": "2026-04-12T18:00:00Z"
-}
-{
-  "orderId": "ORD-SEED-PENDING-001",
-  "status": "Cancelled",
-  "updatedAt": "2026-04-12T18:01:00Z"
-}
-```
-
-Terminal 2 - Trigger status change:
-
-```bash
-curl -X PATCH http://localhost:18080/orders/ORD-SEED-PENDING-001/cancel
-```
-
-### Payment Service Logging Interceptor
-
-Check Payment Service logs to see gRPC interceptor output:
-
-```
-gRPC Request: method=/payment.v1.PaymentService/ProcessPayment
-gRPC Response: method=/payment.v1.PaymentService/ProcessPayment status=OK duration=1.234ms
-```
-
-## Clean Architecture Preservation
-
-| Layer                | Assignment 1                                  | Assignment 2              | Changed? |
-| -------------------- | --------------------------------------------- | ------------------------- | -------- |
-| **Domain**           | Order/Payment entities, Repository interfaces | Same                      | ❌ No    |
-| **Use Case**         | Business logic, orchestration                 | Same                      | ❌ No    |
-| **Repository**       | PostgreSQL implementation                     | Added subscription method | ⚠️ Minor |
-| **Transport (HTTP)** | Gin handlers                                  | Same                      | ❌ No    |
-| **Transport (gRPC)** | N/A                                           | New gRPC servers/clients  | ✅ New   |
-
-**Key Principle**: Business rules in domain and use case layers remain **completely unchanged**. Only the delivery/transport layer was updated to support gRPC.
-
-## Project Structure
-
-```
-.
-├── proto/                           # Contract-first definitions
-│   ├── payment.proto                # PaymentService contract
-│   └── order.proto                  # OrderService with streaming
-├── .github/workflows/
-│   └── generate-proto.yml           # Automated code generation
-├── order-service/
-│   ├── cmd/order-service/
-│   │   └── main.go                  # REST + gRPC servers
-│   ├── internal/
-│   │   ├── domain/                  # Unchanged from Assignment 1
-│   │   ├── usecase/                 # Unchanged + gRPC client
-│   │   ├── repository/              # Added subscription support
-│   │   └── transport/
-│   │       ├── http/                # Unchanged REST handlers
-│   │       └── grpc/                # NEW: gRPC streaming server
-│   └── (imports from ap2-generated-proto)
-└── payment-service/
-    ├── cmd/payment-service/
-    │   └── main.go                  # REST + gRPC servers
-    ├── internal/
-    │   ├── domain/                  # Unchanged
-    │   ├── usecase/                 # Unchanged
-    │   ├── repository/              # Unchanged
-    │   └── transport/
-    │       ├── http/                # Unchanged
-    │       └── grpc/                # NEW: gRPC server + interceptor
-    └── (imports from ap2-generated-proto)
-```
-
-## Grading Rubric Alignment
-
-| Criterion                       | Implementation                              | Evidence                                      |
-| ------------------------------- | ------------------------------------------- | --------------------------------------------- |
-| **Contract-First Flow (30%)**   | Remote generation via GitHub Actions        | `.github/workflows/generate-proto.yml`        |
-| **gRPC Implementation (30%)**   | Clean Architecture preserved, client/server | Separate gRPC transport layer                 |
-| **Proto Design & Config (15%)** | Proper types, env vars for ports            | `google.protobuf.Timestamp`, env config       |
-| **Streaming & DB (15%)**        | Tied to real DB polling                     | `SubscribeToOrderUpdates` implementation      |
-| **Documentation & Git (10%)**   | Comprehensive README, clear commits         | This file + git history                       |
-| **Bonus: Middleware (+10%)**    | Logging interceptor on Payment Service      | `interceptor.go` with method/duration logging |
-
-## Troubleshooting
-
-### gRPC Connection Issues
-
-If Order Service cannot connect to Payment Service:
-
-```bash
-# Check if Payment gRPC server is running
-docker compose logs payment-service | grep "gRPC Server"
-
-# Test gRPC connectivity
-grpcurl -plaintext localhost:50051 list
-```
-
-### Streaming Not Working
-
-If order status updates are not streaming:
-
-```bash
-# Verify order exists
-curl http://localhost:18080/orders/ORD-SEED-PENDING-001
-
-# Check Order gRPC server logs
-docker compose logs order-service | grep "gRPC Server"
-
-# Update order status and watch stream
-curl -X PATCH http://localhost:18080/orders/ORD-SEED-PENDING-001/cancel
-```
-
-### Database Migration Issues
-
-If migrations don't apply:
-
-```bash
-docker compose down -v
-docker compose up --build
+| Variable | Service | Default |
+| --- | --- | --- |
+| `ORDER_DB_URL` | Order | `postgres://postgres:postgres@localhost:5432/order_db?sslmode=disable` |
+| `PAYMENT_GRPC_ADDR` | Order | `localhost:50051` |
+| `ORDER_GRPC_PORT` | Order | `50052` |
+| `PAYMENT_DB_URL` | Payment | `postgres://postgres:postgres@localhost:5432/payment_db?sslmode=disable` |
+| `PAYMENT_GRPC_PORT` | Payment | `50051` |
+| `PAYMENT_HTTP_PORT` | Payment | `8081` |
+| `RABBITMQ_URL` | Payment, Notification | `amqp://guest:guest@localhost:5672/` |
+| `NOTIFICATION_MAX_ATTEMPTS` | Notification | `3` |
+
+## Source Layout
+
+```text
+order-service/          REST + gRPC client + order DB
+payment-service/        gRPC/REST payment processor + RabbitMQ producer
+notification-service/   RabbitMQ consumer + idempotency + ACK/DLQ handling
+proto/                  Assignment 2 proto contracts
+docker-compose.yml      Full runtime environment
+openapi.yaml            REST API contract
 ```

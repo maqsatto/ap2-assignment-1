@@ -1,4 +1,20 @@
 services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   order-db:
     image: postgres:17
     environment:
@@ -27,14 +43,28 @@ services:
     build:
       context: ./payment-service
     depends_on:
-      - payment-db
+      payment-db:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
     environment:
       - PAYMENT_DB_URL=postgres://postgres:postgres@payment-db:5432/payment_db?sslmode=disable
       - PAYMENT_GRPC_PORT=50051
       - PAYMENT_HTTP_PORT=8081
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
     ports:
       - "18081:8081"
       - "50051:50051"
+
+  notification-service:
+    build:
+      context: ./notification-service
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - NOTIFICATION_MAX_ATTEMPTS=3
 
   order-service:
     build:
@@ -53,3 +83,4 @@ services:
 volumes:
   order-db-data:
   payment-db-data:
+  rabbitmq-data:

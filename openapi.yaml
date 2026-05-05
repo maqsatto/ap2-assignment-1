@@ -5,7 +5,8 @@ info:
   description: |-
     REST APIs for the Clean Architecture-based Order and Payment microservices.
     The Order Service orchestrates payments and exposes idempotent order creation.
-    The Payment Service enforces transaction limits and surfaces the per-order status.
+    The Payment Service enforces transaction limits, publishes payment.completed events,
+    and surfaces the per-order status.
 servers:
   - url: http://localhost:18080
     description: Order Service (local)
@@ -204,6 +205,9 @@ components:
       properties:
         customer_id:
           type: string
+        customer_email:
+          type: string
+          format: email
         item_name:
           type: string
         amount:
@@ -221,9 +225,13 @@ components:
         amount:
           type: integer
           format: int64
+        customer_email:
+          type: string
+          format: email
       required:
         - order_id
         - amount
+        - customer_email
     Order:
       type: object
       properties:
@@ -231,11 +239,17 @@ components:
           type: string
         customer_id:
           type: string
+        customer_email:
+          type: string
+          format: email
         item_name:
           type: string
         amount:
           type: integer
           format: int64
+        customer_email:
+          type: string
+          format: email
         status:
           type: string
           enum:

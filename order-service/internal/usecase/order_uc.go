@@ -77,15 +77,28 @@ func (c *PaymentHTTPClient) ProcessPayment(orderID string, amount int64, custome
 type OrderUseCase struct {
 	repo          domain.OrderRepository
 	paymentClient PaymentClient
+	cache         OrderCache
+	cacheTTL      time.Duration
 }
 
 var ErrPaymentServiceUnavailable = errors.New("payment service unavailable")
+
+type OrderCache interface {
+	Get(id string) (*domain.Order, bool, error)
+	Set(order *domain.Order, ttl time.Duration) error
+	Delete(id string) error
+}
 
 func NewOrderUseCase(repo domain.OrderRepository, paymentClient PaymentClient) *OrderUseCase {
 	return &OrderUseCase{
 		repo:          repo,
 		paymentClient: paymentClient,
 	}
+}
+
+func (uc *OrderUseCase) SetCache(cache OrderCache, ttl time.Duration) {
+	uc.cache = cache
+	uc.cacheTTL = ttl
 }
 
 func (uc *OrderUseCase) CreateOrder(customerID, customerEmail, itemName string, amount int64) (*domain.Order, error) {
@@ -118,6 +131,7 @@ func (uc *OrderUseCase) CreateOrder(customerID, customerEmail, itemName string, 
 		if updateErr := uc.repo.UpdateStatus(order.ID, "Failed"); updateErr != nil {
 			return nil, fmt.Errorf("failed to mark order as failed: %w", updateErr)
 		}
+		uc.deleteCache(order.ID)
 		order.Status = "Failed"
 		order.UpdatedAt = time.Now()
 		return nil, fmt.Errorf("%w: %v", ErrPaymentServiceUnavailable, err)
@@ -127,12 +141,14 @@ func (uc *OrderUseCase) CreateOrder(customerID, customerEmail, itemName string, 
 		if err := uc.repo.UpdateStatus(order.ID, "Paid"); err != nil {
 			return nil, fmt.Errorf("failed to mark order as paid: %w", err)
 		}
+		uc.deleteCache(order.ID)
 		order.Status = "Paid"
 		order.UpdatedAt = time.Now()
 	} else {
 		if err := uc.repo.UpdateStatus(order.ID, "Failed"); err != nil {
 			return nil, fmt.Errorf("failed to mark order as failed: %w", err)
 		}
+		uc.deleteCache(order.ID)
 		order.Status = "Failed"
 		order.UpdatedAt = time.Now()
 	}
@@ -141,7 +157,20 @@ func (uc *OrderUseCase) CreateOrder(customerID, customerEmail, itemName string, 
 }
 
 func (uc *OrderUseCase) GetOrder(id string) (*domain.Order, error) {
-	return uc.repo.GetByID(id)
+	if uc.cache != nil {
+		if order, ok, err := uc.cache.Get(id); err == nil && ok {
+			return order, nil
+		}
+	}
+
+	order, err := uc.repo.GetByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if uc.cache != nil {
+		_ = uc.cache.Set(order, uc.cacheTTL)
+	}
+	return order, nil
 }
 
 func (uc *OrderUseCase) ListOrders() ([]domain.Order, error) {
@@ -158,5 +187,15 @@ func (uc *OrderUseCase) CancelOrder(id string) error {
 		return fmt.Errorf("only pending orders can be cancelled")
 	}
 
-	return uc.repo.UpdateStatus(id, "Cancelled")
+	if err := uc.repo.UpdateStatus(id, "Cancelled"); err != nil {
+		return err
+	}
+	uc.deleteCache(id)
+	return nil
+}
+
+func (uc *OrderUseCase) deleteCache(id string) {
+	if uc.cache != nil {
+		_ = uc.cache.Delete(id)
+	}
 }

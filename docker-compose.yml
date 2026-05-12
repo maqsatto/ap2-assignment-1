@@ -1,4 +1,17 @@
 services:
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   rabbitmq:
     image: rabbitmq:3.13-management
     environment:
@@ -42,16 +55,13 @@ services:
   payment-service:
     build:
       context: ./payment-service
+    env_file:
+      - .env
     depends_on:
       payment-db:
         condition: service_started
       rabbitmq:
         condition: service_healthy
-    environment:
-      - PAYMENT_DB_URL=postgres://postgres:postgres@payment-db:5432/payment_db?sslmode=disable
-      - PAYMENT_GRPC_PORT=50051
-      - PAYMENT_HTTP_PORT=8081
-      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
     ports:
       - "18081:8081"
       - "50051:50051"
@@ -59,23 +69,26 @@ services:
   notification-service:
     build:
       context: ./notification-service
+    env_file:
+      - .env
     depends_on:
       rabbitmq:
         condition: service_healthy
-    environment:
-      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-      - NOTIFICATION_MAX_ATTEMPTS=3
+      redis:
+        condition: service_healthy
 
   order-service:
     build:
       context: ./order-service
+    env_file:
+      - .env
     depends_on:
-      - order-db
-      - payment-service
-    environment:
-      - ORDER_DB_URL=postgres://postgres:postgres@order-db:5432/order_db?sslmode=disable
-      - PAYMENT_GRPC_ADDR=payment-service:50051
-      - ORDER_GRPC_PORT=50052
+      order-db:
+        condition: service_started
+      payment-service:
+        condition: service_started
+      redis:
+        condition: service_healthy
     ports:
       - "18080:8080"
       - "50052:50052"
@@ -84,3 +97,4 @@ volumes:
   order-db-data:
   payment-db-data:
   rabbitmq-data:
+  redis-data:

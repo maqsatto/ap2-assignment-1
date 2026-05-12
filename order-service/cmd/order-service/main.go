@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 )
 
@@ -26,6 +28,10 @@ func main() {
 	dbURL := getEnv("ORDER_DB_URL", "postgres://postgres:postgres@localhost:5432/order_db?sslmode=disable")
 	paymentGRPCAddr := getEnv("PAYMENT_GRPC_ADDR", "localhost:50051")
 	orderGRPCPort := getEnv("ORDER_GRPC_PORT", "50052")
+	redisAddr := getEnv("REDIS_ADDR", "localhost:6379")
+	cacheTTL := getEnvDuration("ORDER_CACHE_TTL", 5*time.Minute)
+	rateLimit := getEnvInt64("RATE_LIMIT_REQUESTS", 10)
+	rateWindow := getEnvDuration("RATE_LIMIT_WINDOW", time.Minute)
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -50,6 +56,9 @@ func main() {
 	defer paymentClient.Close()
 
 	uc := usecase.NewOrderUseCase(repo, paymentClient)
+	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr})
+	defer redisClient.Close()
+	uc.SetCache(repository.NewRedisOrderCache(redisClient), cacheTTL)
 	handler := ordhttp.NewHandler(uc)
 
 	grpcServer, grpcListener := newGRPCServer(orderGRPCPort, repo)
@@ -62,6 +71,7 @@ func main() {
 
 	// Start HTTP server
 	r := gin.Default()
+	r.Use(ordhttp.RedisRateLimiter(redisClient, rateLimit, rateWindow))
 
 	r.POST("/orders", handler.CreateOrder)
 	r.GET("/orders", handler.ListOrders)
@@ -107,4 +117,28 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func getEnvDuration(key string, fallback time.Duration) time.Duration {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func getEnvInt64(key string, fallback int64) int64 {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }

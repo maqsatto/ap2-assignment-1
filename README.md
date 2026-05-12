@@ -1,32 +1,41 @@
-# Advanced Programming 2 - Assignment 3
+# Advanced Programming 2 - Assignment 4
 
-Event-Driven Architecture with RabbitMQ. This repository continues the Assignment 2 gRPC solution and adds asynchronous notifications:
+Performance optimization and reliable background jobs. This repository continues the previous microservices and adds Redis caching, Redis idempotency, exponential backoff, and a provider adapter for notifications.
 
 ```text
-Order Service -> gRPC -> Payment Service -> RabbitMQ -> Notification Service
+Client -> Order Service -> gRPC -> Payment Service -> RabbitMQ -> Notification Worker -> Provider Adapter
+              |                                      |
+              +-------------- Redis -----------------+
 ```
 
-## What Changed From Assignment 2
+## What Changed From Assignment 3
 
-- Order Service still calls Payment Service synchronously through gRPC.
-- Payment Service is now also a RabbitMQ producer.
-- Notification Service is a new independent consumer service.
-- Email sending is simulated by logs, so Payment no longer calls Notification directly.
-- Docker Compose now runs Order, Payment, Notification, PostgreSQL databases, and RabbitMQ.
+- Order Service uses Redis cache-aside for `GET /orders/:id`.
+- Order Service invalidates the order cache right after status changes.
+- Order Service has a Redis-backed API rate limiter for the bonus task.
+- Notification Service now uses a provider adapter (`EmailSender`) instead of writing directly inside business logic.
+- Notification idempotency moved from memory to Redis, so retries do not send duplicate emails after restarts.
+- Failed notification jobs use exponential backoff before retrying.
+- Docker Compose now runs Redis together with PostgreSQL and RabbitMQ.
 
 ## Architecture Diagram
 
 ```mermaid
 flowchart LR
     Client[HTTP Client] -->|POST /orders| Order[Order Service]
+    Client -->|GET /orders/:id| Order
+    Client -->|rate limit by IP| Redis[(Redis)]
     Order -->|ProcessPayment gRPC| Payment[Payment Service]
     Order --> OrderDB[(order-db)]
+    Order -->|cache-aside order:id TTL 5m| Redis
+    Order -->|delete order:id after status update| Redis
     Payment --> PaymentDB[(payment-db)]
     Payment -->|durable JSON payment.completed| Rabbit[(RabbitMQ)]
     Rabbit -->|manual ACK consumer| Notification[Notification Service]
     Rabbit --> DLQ[(payment.completed.dlq)]
-
-    Notification -->|console log| Log[Notification log]
+    Notification -->|idempotency key notification:sent:payment_id| Redis
+    Notification -->|EmailSender adapter| Provider[Simulated provider]
+    Provider -->|console log or failure| Log[Notification log]
 ```
 
 ## Services
@@ -36,6 +45,9 @@ flowchart LR
 - Exposes REST API on `http://localhost:18080`.
 - Creates orders and calls Payment Service via gRPC.
 - Accepts `customer_email` and forwards it to Payment Service through gRPC metadata.
+- Uses Redis for cache-aside reads on `GET /orders/:id`.
+- Deletes the cached `order:{id}` key after status updates such as `Paid`, `Failed`, or `Cancelled`.
+- Limits clients to `RATE_LIMIT_REQUESTS` per `RATE_LIMIT_WINDOW` using Redis counters.
 - Has graceful shutdown for HTTP and gRPC servers.
 
 Example:
@@ -71,13 +83,26 @@ Event payload:
 
 - Consumes only RabbitMQ messages.
 - Does not import or call Order Service or Payment Service.
-- Logs the simulated email:
+- Uses `EmailSender` interface, selected with `PROVIDER_MODE`.
+- The included `SIMULATED` provider sleeps for `SIMULATED_PROVIDER_LATENCY` and randomly fails according to `SIMULATED_PROVIDER_FAILURE_RATE`.
+- Stores processed payment IDs in Redis with `NOTIFICATION_IDEMPOTENCY_TTL`.
+- Logs the simulated email after the provider succeeds:
 
 ```text
 [Notification] Sent email to user@example.com for Order #ORD-123. Amount: $99.99
 ```
 
 ## Reliability
+
+### Redis Cache-Aside
+
+`GET /orders/:id` first checks Redis using key `order:{id}`. On a cache miss, the service reads PostgreSQL and stores the order in Redis for `ORDER_CACHE_TTL`, which is `5m` by default.
+
+Invalidation happens immediately after database status updates. For example, after payment authorization the database row is changed to `Paid`, then `order:{id}` is deleted. The next read goes to PostgreSQL and refreshes Redis with the newest status.
+
+### API Rate Limiter Bonus
+
+The Order Service uses Redis key `rate_limit:{client_ip}` and increments it for each request. The key expires after `RATE_LIMIT_WINDOW`. When the value is higher than `RATE_LIMIT_REQUESTS`, the API returns HTTP `429 Too Many Requests`.
 
 ### Durable Queues and Persistent Messages
 
@@ -93,12 +118,24 @@ Notification Service consumes with `autoAck=false`.
 
 ### Idempotency Strategy
 
-Notification Service keeps an in-memory map of processed `event_id` values.
+Notification Service stores processed payment event IDs in Redis.
 
-- First delivery: log is printed, then `event_id` is marked processed, then ACK is sent.
-- Duplicate delivery: `event_id` is already known, so the service skips the log and ACKs the duplicate.
+- First delivery: Redis key `notification:sent:{payment_id}` is missing, provider is called, then the key is saved as `sent`.
+- Duplicate delivery: Redis key already exists, so the worker skips the provider call and ACKs the duplicate.
 
-This prevents duplicate notification logs for the same event ID. For a production system, the same strategy would use a database table instead of memory.
+This prevents duplicate notification logs for the same payment even if RabbitMQ redelivers a message or the worker restarts.
+
+### Provider Adapter and Retry Logic
+
+Notification worker depends on the `EmailSender` interface. The current adapter is simulated, which is allowed by the assignment. It behaves like an unstable external API by sleeping and sometimes returning an error.
+
+If sending fails, the RabbitMQ message is not treated as successful. The worker republishes it with the next `x-attempts` header and waits with exponential backoff:
+
+```text
+attempt 1 -> 2s
+attempt 2 -> 4s
+attempt 3 -> 8s
+```
 
 ### DLQ Bonus
 
@@ -140,6 +177,7 @@ Services and ports:
 | Order gRPC stream | `localhost:50052` |
 | RabbitMQ AMQP | `localhost:5672` |
 | RabbitMQ UI | `http://localhost:15672` |
+| Redis | `localhost:6379` |
 
 If you previously ran Assignment 2 containers, reset volumes once so the updated schemas and RabbitMQ topology are created cleanly:
 
@@ -188,6 +226,23 @@ docker compose start notification-service
 
 8. Demonstrate DLQ with `fail@example.com` and inspect `payment.completed.dlq` in RabbitMQ UI.
 
+9. Demonstrate cache read:
+
+```bash
+curl http://localhost:18080/orders/ORD-your-id
+curl http://localhost:18080/orders/ORD-your-id
+```
+
+The first request fills Redis. The second request is served from cache until TTL expires or the order status changes.
+
+10. Demonstrate rate limit:
+
+```bash
+for i in {1..12}; do curl -i http://localhost:18080/orders; done
+```
+
+After the configured limit, the response becomes `429 Too Many Requests`.
+
 ## Configuration
 
 | Variable | Service | Default |
@@ -199,14 +254,24 @@ docker compose start notification-service
 | `PAYMENT_GRPC_PORT` | Payment | `50051` |
 | `PAYMENT_HTTP_PORT` | Payment | `8081` |
 | `RABBITMQ_URL` | Payment, Notification | `amqp://guest:guest@localhost:5672/` |
+| `REDIS_ADDR` | Order, Notification | `localhost:6379` |
+| `ORDER_CACHE_TTL` | Order | `5m` |
+| `RATE_LIMIT_REQUESTS` | Order | `10` |
+| `RATE_LIMIT_WINDOW` | Order | `1m` |
+| `PROVIDER_MODE` | Notification | `SIMULATED` |
+| `SIMULATED_PROVIDER_LATENCY` | Notification | `300ms` |
+| `SIMULATED_PROVIDER_FAILURE_RATE` | Notification | `15` |
 | `NOTIFICATION_MAX_ATTEMPTS` | Notification | `3` |
+| `NOTIFICATION_IDEMPOTENCY_TTL` | Notification | `24h` |
+
+Configuration values are listed in `.env.example`; the local Docker setup uses `.env`.
 
 ## Source Layout
 
 ```text
 order-service/          REST + gRPC client + order DB
 payment-service/        gRPC/REST payment processor + RabbitMQ producer
-notification-service/   RabbitMQ consumer + idempotency + ACK/DLQ handling
+notification-service/   RabbitMQ worker + Redis idempotency + provider adapter
 proto/                  Assignment 2 proto contracts
 docker-compose.yml      Full runtime environment
 openapi.yaml            REST API contract

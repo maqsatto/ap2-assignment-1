@@ -168,6 +168,10 @@ func (c *RabbitConsumer) handleDelivery(ctx context.Context, msg amqp.Delivery) 
 }
 
 func (c *RabbitConsumer) retry(ctx context.Context, msg amqp.Delivery, nextAttempt int32) error {
+	if err := sleepBackoff(ctx, nextAttempt-1); err != nil {
+		return err
+	}
+
 	headers := amqp.Table{}
 	for key, value := range msg.Headers {
 		headers[key] = value
@@ -183,6 +187,29 @@ func (c *RabbitConsumer) retry(ctx context.Context, msg amqp.Delivery, nextAttem
 		Headers:       headers,
 		Body:          msg.Body,
 	})
+}
+
+func RetryBackoff(attempt int32) time.Duration {
+	if attempt <= 1 {
+		return 2 * time.Second
+	}
+	delay := 2 * time.Second
+	for i := int32(1); i < attempt; i++ {
+		delay *= 2
+	}
+	return delay
+}
+
+func sleepBackoff(ctx context.Context, attempt int32) error {
+	timer := time.NewTimer(RetryBackoff(attempt))
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (c *RabbitConsumer) Close() error {

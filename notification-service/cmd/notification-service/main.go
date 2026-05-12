@@ -10,13 +10,25 @@ import (
 	"time"
 
 	"notification-service/internal/consumer"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
 	rabbitURL := getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+	redisAddr := getEnv("REDIS_ADDR", "localhost:6379")
 	maxAttempts := getEnvInt32("NOTIFICATION_MAX_ATTEMPTS", 3)
+	providerMode := getEnv("PROVIDER_MODE", "SIMULATED")
+	providerLatency := getEnvDuration("SIMULATED_PROVIDER_LATENCY", 300*time.Millisecond)
+	providerFailureRate := getEnvInt("SIMULATED_PROVIDER_FAILURE_RATE", 15)
+	idempotencyTTL := getEnvDuration("NOTIFICATION_IDEMPOTENCY_TTL", 24*time.Hour)
 
-	processor := consumer.NewProcessor(consumer.NewInMemoryIdempotencyStore(), os.Stdout)
+	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr})
+	defer redisClient.Close()
+
+	store := consumer.NewRedisIdempotencyStore(redisClient, idempotencyTTL)
+	sender := newEmailSender(providerMode, providerLatency, providerFailureRate)
+	processor := consumer.NewProcessor(store, sender)
 	rabbitConsumer, err := connectRabbitConsumer(rabbitURL, processor, maxAttempts)
 	if err != nil {
 		log.Fatalf("failed to initialize rabbitmq consumer: %v", err)
@@ -65,4 +77,38 @@ func getEnvInt32(key string, fallback int32) int32 {
 		return fallback
 	}
 	return int32(parsed)
+}
+
+func getEnvInt(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func getEnvDuration(key string, fallback time.Duration) time.Duration {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func newEmailSender(mode string, latency time.Duration, failureRate int) consumer.EmailSender {
+	switch mode {
+	case "SIMULATED", "MOCK", "":
+		return consumer.NewSimulatedEmailSender(os.Stdout, latency, failureRate)
+	default:
+		log.Printf("unknown PROVIDER_MODE=%s, using SIMULATED provider", mode)
+		return consumer.NewSimulatedEmailSender(os.Stdout, latency, failureRate)
+	}
 }

@@ -4,16 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 )
 
 type Processor struct {
 	store  IdempotencyStore
-	output io.Writer
+	sender EmailSender
 }
 
-func NewProcessor(store IdempotencyStore, output io.Writer) *Processor {
-	return &Processor{store: store, output: output}
+func NewProcessor(store IdempotencyStore, sender EmailSender) *Processor {
+	return &Processor{store: store, sender: sender}
 }
 
 func (p *Processor) Process(ctx context.Context, body []byte) error {
@@ -30,24 +29,23 @@ func (p *Processor) Process(ctx context.Context, body []byte) error {
 	if event.EventID == "" {
 		return fmt.Errorf("payment event has empty event_id")
 	}
-	if p.store.AlreadyProcessed(event.EventID) {
+	processed, err := p.store.AlreadyProcessed(ctx, event.EventID)
+	if err != nil {
+		return err
+	}
+	if processed {
 		return nil
 	}
 
-	if event.CustomerEmail == "fail@example.com" {
-		return fmt.Errorf("simulated permanent notification failure for %s", event.CustomerEmail)
+	msg := EmailMessage{
+		To:      event.CustomerEmail,
+		OrderID: event.OrderID,
+		Amount:  event.Amount,
+		Status:  event.Status,
+	}
+	if err := p.sender.Send(ctx, msg); err != nil {
+		return err
 	}
 
-	if _, err := fmt.Fprintf(
-		p.output,
-		"[Notification] Sent email to %s for Order #%s. Amount: $%.2f\n",
-		event.CustomerEmail,
-		event.OrderID,
-		float64(event.Amount)/100,
-	); err != nil {
-		return fmt.Errorf("write notification log: %w", err)
-	}
-
-	p.store.MarkProcessed(event.EventID)
-	return nil
+	return p.store.MarkProcessed(ctx, event.EventID)
 }
